@@ -1,0 +1,29 @@
+import (
+	"fmt"
+)
+
+{{ $decorator := (or .Vars.DecoratorName (printf "%sWithErrWrap" .Interface.Name | title)) }}
+
+// {{$decorator}} wraps errors from {{.Interface.Type}} with operation context.
+type {{$decorator}} struct {
+	_base {{.Interface.Type}}
+}
+
+// New{{$decorator}} returns a {{$decorator}} wrapping the given base implementation.
+func New{{$decorator}}(base {{.Interface.Type}}) {{.Interface.Type}} {
+	return &{{$decorator}}{_base: base}
+}
+
+{{range $method := .Interface.Methods}}
+// {{$method.Name}} implements {{$.Interface.Type}}.
+func (_d *{{$decorator}}) {{$method.Name}}({{range $i, $p := $method.Params}}arg{{$i}} {{$p.Type}}, {{end}}) ({{$method.Results}}) {
+	const op = "{{$.Vars.OpPrefix}}.{{$method.Name}}"
+	{{$method.ResultsNames}} = _d._base.{{$method.Name}}({{range $i, $p := $method.Params}}{{if $i}}, {{end}}arg{{$i}}{{end}})
+	{{- if $method.ReturnsError}}
+	if err != nil {
+		err = fmt.Errorf("%s: %w", op, err)
+	}
+	{{- end}}
+	return
+}
+{{end}}

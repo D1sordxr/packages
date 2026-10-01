@@ -260,7 +260,7 @@ func (l *Log) copyWithEntry(entry zap.SugaredLogger) *Log {
 	}
 }
 
-// LogPanic логирует пойманную панику
+// LogPanic logs a recovered panic.
 func LogPanic(recovered interface{}) { // nolint: revive
 	if recovered == nil {
 		return
