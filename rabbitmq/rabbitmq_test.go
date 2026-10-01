@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -271,5 +272,68 @@ func TestConnectionComponentShutdown(t *testing.T) {
 	}
 	if !conn.IsClosed() {
 		t.Fatal("connection is still open after Shutdown")
+	}
+}
+
+func TestPublishUnroutableIsReturned(t *testing.T) {
+	conn := dial(t)
+	main, _, _ := declare(t, conn)
+	p := publisher(t, conn)
+
+	// main is a direct exchange bound with an empty key: "nope" matches no queue.
+	err := p.Publish(context.Background(), main, "nope", amqp.Publishing{Body: []byte("lost")})
+	if !errors.Is(err, rabbitmq.ErrUnroutable) {
+		t.Fatalf("Publish() = %v, want %v", err, rabbitmq.ErrUnroutable)
+	}
+
+	if err = p.Publish(context.Background(), main, "", amqp.Publishing{Body: []byte("ok")}); err != nil {
+		t.Fatalf("Publish() after a return = %v, want nil", err)
+	}
+}
+
+func TestPublishConcurrentMatchesReturnsToPublishes(t *testing.T) {
+	conn := dial(t)
+	main, _, _ := declare(t, conn)
+	p := publisher(t, conn)
+
+	const n = 200
+
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			key := ""
+			if i%2 == 1 {
+				key = "nope"
+			}
+			errs[i] = p.Publish(context.Background(), main, key, amqp.Publishing{Body: []byte("m")})
+		})
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		routable := i%2 == 0
+		if routable && err != nil {
+			t.Errorf("publish %d (routable) = %v, want nil", i, err)
+		}
+		if !routable && !errors.Is(err, rabbitmq.ErrUnroutable) {
+			t.Errorf("publish %d (unroutable) = %v, want %v", i, err, rabbitmq.ErrUnroutable)
+		}
+	}
+}
+
+func TestPublisherReopensChannelAfterChannelError(t *testing.T) {
+	conn := dial(t)
+	main, _, _ := declare(t, conn)
+	p := publisher(t, conn)
+
+	// Publishing to a missing exchange makes the broker close the channel.
+	err := p.Publish(context.Background(), "pkgtest.missing-exchange", "", amqp.Publishing{Body: []byte("x")})
+	if !errors.Is(err, rabbitmq.ErrChannelClosed) {
+		t.Fatalf("Publish() to a missing exchange = %v, want %v", err, rabbitmq.ErrChannelClosed)
+	}
+
+	if err = p.Publish(context.Background(), main, "", amqp.Publishing{Body: []byte("ok")}); err != nil {
+		t.Fatalf("Publish() after channel error = %v, want nil", err)
 	}
 }

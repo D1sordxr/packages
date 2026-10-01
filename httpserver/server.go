@@ -11,23 +11,32 @@ import (
 	"time"
 )
 
-const defaultReadHeaderTimeout = 5 * time.Second
+const (
+	defaultReadHeaderTimeout = 5 * time.Second
+	defaultShutdownTimeout   = 10 * time.Second
+)
 
 // Config holds the listen address and timeouts. Zero timeouts mean none,
-// except ReadHeaderTimeout, which defaults to 5s.
+// except ReadHeaderTimeout, which defaults to 5s, and ShutdownTimeout, which
+// defaults to 10s.
 type Config struct {
 	Addr              string        `yaml:"addr"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
 	ReadTimeout       time.Duration `yaml:"read_timeout"`
 	WriteTimeout      time.Duration `yaml:"write_timeout"`
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+	// ShutdownTimeout bounds the graceful shutdown Start performs when its ctx
+	// is cancelled; connections still active after it are closed.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 }
 
 // Server is an http.Server with the app.Component lifecycle: Start listens
-// and serves until Shutdown, which stops accepting connections and waits
-// for active requests within the ctx deadline.
+// and serves until its ctx is cancelled or Shutdown is called. Both stop
+// accepting connections and wait for active requests: Shutdown within its
+// ctx deadline, a cancelled Start within Config.ShutdownTimeout.
 type Server struct {
-	srv *http.Server
+	srv             *http.Server
+	shutdownTimeout time.Duration
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -39,7 +48,13 @@ func New(cfg Config, handler http.Handler) *Server {
 		readHeaderTimeout = defaultReadHeaderTimeout
 	}
 
+	shutdownTimeout := cfg.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = defaultShutdownTimeout
+	}
+
 	return &Server{
+		shutdownTimeout: shutdownTimeout,
 		srv: &http.Server{
 			Addr:              cfg.Addr,
 			Handler:           handler,
@@ -63,6 +78,11 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listener = listener
 	s.mu.Unlock()
 
+	// Serve does not watch ctx: without this, a cancelled ctx (e.g. another
+	// component failed) would leave Start running and the app hanging.
+	stopWatching := context.AfterFunc(ctx, s.shutdownOnCancel)
+	defer stopWatching()
+
 	if err = s.srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("%s: %w", op, err)
 	}
@@ -80,6 +100,15 @@ func (s *Server) Addr() net.Addr {
 		return nil
 	}
 	return s.listener.Addr()
+}
+
+func (s *Server) shutdownOnCancel() {
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+	defer cancel()
+
+	if err := s.srv.Shutdown(ctx); err != nil {
+		_ = s.srv.Close()
+	}
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {

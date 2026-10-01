@@ -1,6 +1,10 @@
 package postgres
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
 
 func TestConfigConnectionString(t *testing.T) {
 	t.Parallel()
@@ -18,12 +22,12 @@ func TestConfigConnectionString(t *testing.T) {
 		{
 			name: "built from fields",
 			cfg:  Config{Host: "pg", Port: 5432, Database: "db", User: "u", Password: "p"},
-			want: "host=pg user=u password=p dbname=db port=5432",
+			want: "postgres://u:p@pg:5432/db",
 		},
 		{
 			name: "with ssl mode",
 			cfg:  Config{Host: "pg", Port: 5432, Database: "db", User: "u", Password: "p", SSLMode: "disable"},
-			want: "host=pg user=u password=p dbname=db port=5432 sslmode=disable",
+			want: "postgres://u:p@pg:5432/db?sslmode=disable",
 		},
 	}
 
@@ -35,5 +39,30 @@ func TestConfigConnectionString(t *testing.T) {
 				t.Fatalf("ConnectionString() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestConfigConnectionStringEscapesValues(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Host:     "pg",
+		Port:     6432,
+		Database: "my db",
+		User:     "user@corp",
+		Password: `p@ss w'rd/:?#\`,
+		SSLMode:  "require",
+	}
+
+	parsed, err := pgxpool.ParseConfig(cfg.ConnectionString())
+	if err != nil {
+		t.Fatalf("ParseConfig(%q) = %v", cfg.ConnectionString(), err)
+	}
+
+	conn := parsed.ConnConfig
+	if conn.Host != cfg.Host || conn.Port != 6432 || conn.Database != cfg.Database ||
+		conn.User != cfg.User || conn.Password != cfg.Password {
+		t.Fatalf("parsed = host %q port %d db %q user %q password %q, want %+v",
+			conn.Host, conn.Port, conn.Database, conn.User, conn.Password, cfg)
 	}
 }

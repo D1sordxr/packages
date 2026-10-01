@@ -2,15 +2,17 @@
 package postgres
 
 import (
-	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"time"
 )
 
 const defaultConnectTimeout = 5 * time.Second
 
 // Config holds connection and pool settings. DSN is used as is when set;
-// otherwise the connection string is built from Host/Port/Database/User/Password
-// and SSLMode (when empty, the libpq default "prefer" applies).
+// otherwise a URL is built from Host/Port/Database/User/Password and SSLMode
+// (when empty, the libpq default "prefer" applies). Zero Port means 5432.
 // Zero pool settings keep the pgx defaults.
 type Config struct {
 	DSN      string `yaml:"dsn"`
@@ -33,13 +35,24 @@ func (c *Config) ConnectionString() string {
 		return c.DSN
 	}
 
-	dsn := fmt.Sprintf(
-		"host=%s user=%s password=%s dbname=%s port=%d",
-		c.Host, c.User, c.Password, c.Database, c.Port,
-	)
-	if c.SSLMode != "" {
-		dsn += " sslmode=" + c.SSLMode
+	host := c.Host
+	if c.Port != 0 {
+		host = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	}
 
-	return dsn
+	// url.URL escapes credentials and the database name, so values with
+	// spaces, quotes or '@' survive.
+	u := url.URL{
+		Scheme: "postgres",
+		Host:   host,
+		Path:   "/" + c.Database,
+	}
+	if c.User != "" {
+		u.User = url.UserPassword(c.User, c.Password)
+	}
+	if c.SSLMode != "" {
+		u.RawQuery = url.Values{"sslmode": {c.SSLMode}}.Encode()
+	}
+
+	return u.String()
 }

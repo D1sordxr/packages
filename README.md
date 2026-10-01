@@ -19,7 +19,7 @@ Requires Go 1.27.
 | `postgres/tx` | Transaction manager: `WithTransaction(ctx, fn)` |
 | `rabbitmq` | Connection with retries, topology declaration, confirming `Publisher`, `Consumer` and `ConnectionComponent` |
 | `redis` | `go-redis` client construction from `Config`, `ClientComponent` for health checks and graceful close |
-| `httpserver` | `net/http` server as a `Component` with graceful shutdown |
+| `httpserver` | `net/http` server as a `Component`; graceful shutdown on `Shutdown` or when its context is cancelled |
 | `cron` | `Worker` that runs a group of background handlers as one `Component` |
 | `ctxutil` | Type-safe context values keyed by type |
 | `kafka/consumer`, `kafka/producer` | Thin wrappers over `segmentio/kafka-go` |
@@ -127,8 +127,11 @@ err = rabbitmq.Topology{
 	},
 }.Declare(conn)
 
-publisher, err := rabbitmq.NewPublisher(conn) // confirm mode: Publish returns once the broker has the message
+publisher, err := rabbitmq.NewPublisher(conn)
 err = publisher.Publish(ctx, "delay", "", amqp.Publishing{Body: body, Expiration: rabbitmq.Expiration(time.Minute)})
+if errors.Is(err, rabbitmq.ErrUnroutable) {
+	// no queue is bound for this exchange and routing key: the message was not stored
+}
 
 consumer := rabbitmq.NewConsumer(conn, rabbitmq.ConsumerConfig{Queue: "main", Prefetch: 10},
 	func(ctx context.Context, d amqp.Delivery) error {

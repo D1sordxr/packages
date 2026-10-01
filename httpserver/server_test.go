@@ -2,10 +2,14 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/D1sordxr/packages/app"
 )
 
 func TestServerServesUntilShutdown(t *testing.T) {
@@ -89,5 +93,58 @@ func TestStartFailsOnBusyAddress(t *testing.T) {
 	second := New(Config{Addr: first.Addr().String()}, http.NotFoundHandler())
 	if err := second.Start(context.Background()); err == nil {
 		t.Fatal("Start() on a busy address = nil, want error")
+	}
+}
+
+func TestStartReturnsWhenContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	srv := New(Config{Addr: "127.0.0.1:0"}, http.NotFoundHandler())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Start(ctx) }()
+
+	for srv.Addr() == nil {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start() did not return after ctx was cancelled")
+	}
+}
+
+type failingComponent struct{ err error }
+
+func (f failingComponent) Start(context.Context) error {
+	time.Sleep(50 * time.Millisecond)
+	return f.err
+}
+
+func (failingComponent) Shutdown(context.Context) error { return nil }
+
+func TestAppStopsWhenAnotherComponentFails(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("boom")
+	srv := New(Config{Addr: "127.0.0.1:0"}, http.NotFoundHandler())
+	a := app.New(slog.New(slog.NewTextHandler(io.Discard, nil)), srv, failingComponent{err: boom})
+
+	done := make(chan error, 1)
+	go func() { done <- a.Run(context.Background()) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, boom) {
+			t.Fatalf("Run() = %v, want error wrapping %v", err, boom)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("app.Run() hangs after a component failed")
 	}
 }
