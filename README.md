@@ -4,10 +4,10 @@ Reusable infrastructure for Go services: application lifecycle, PostgreSQL pool 
 context-bound transactions, RabbitMQ, Redis, HTTP server, cron workers, Kafka and logging helpers.
 
 ```sh
-go get github.com/D1sordxr/packages@latest
+go get github.com/D1sordxr/packages@v0.3.0
 ```
 
-Requires Go 1.27.
+Requires Go 1.27. Upgrading from v0.2? See [Upgrading from v0.2](#upgrading-from-v02).
 
 ## Packages
 
@@ -31,42 +31,58 @@ Requires Go 1.27.
 ```go
 import (
 	"github.com/D1sordxr/packages/app"
+	"github.com/D1sordxr/packages/httpserver"
 	"github.com/D1sordxr/packages/postgres"
 	exec "github.com/D1sordxr/packages/postgres/executor"
 	"github.com/D1sordxr/packages/postgres/tx"
+	"github.com/D1sordxr/packages/redis"
 )
 
 func main() {
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	log := slog.Default()
 
-	pool, err := postgres.NewPool(ctx, &postgres.Config{DSN: os.Getenv("DSN")})
+	pool, err := postgres.NewPool(ctx, &postgres.Config{
+		Host: "localhost", Database: "app", User: "app", Password: "secret", SSLMode: "disable",
+	})
 	if err != nil {
 		log.Error("init postgres", "error", err)
-		os.Exit(1)
+		return err
+	}
+
+	cache, err := redis.NewClient(ctx, &redis.Config{Addr: "localhost:6379"})
+	if err != nil {
+		pool.Close()
+		log.Error("init redis", "error", err)
+		return err
 	}
 
 	executor := exec.NewExecutor(pool)
 	txManager := tx.NewManager(executor)
+	// Repositories depend on exec.Querier (executor), use cases on tx.Manager.
 
-	// Repositories depend on exec.Querier, use cases on tx.Manager.
-	_ = txManager
+	server := httpserver.New(httpserver.Config{Addr: ":8080"}, newRouter(executor, txManager, cache))
 
-	// Components are stopped in reverse order: register the pool first
-	// so it is closed after everything that uses it.
-	a := app.New(log,
+	// Components are stopped in reverse order: register connections first
+	// so they are closed after everything that uses them.
+	return app.New(log,
 		postgres.NewPoolComponent(pool, log, 0),
-		httpServer, // any app.Component
-	).With(app.WithShutdownTimeout(10 * time.Second))
-
-	if err := a.Run(ctx); err != nil {
-		log.Error("app stopped", "error", err)
-		os.Exit(1)
-	}
+		redis.NewClientComponent(cache, log, 0),
+		server,
+	).With(app.WithShutdownTimeout(10 * time.Second)).Run(ctx)
 }
 ```
+
+`postgres.Config` and `redis.Config` carry `yaml` tags, so they can be embedded into a
+service config as is. `postgres.Config.DSN`, when set, is used instead of the separate fields.
 
 ### Components
 
@@ -144,6 +160,14 @@ a := app.New(log,
 )
 ```
 
+### HTTP server
+
+`httpserver.Server` listens on `Config.Addr` and serves until `Shutdown` is called or the
+context passed to `Start` is cancelled. Either way it stops accepting connections and waits
+for active requests: `Shutdown` within its ctx deadline, a cancelled `Start` within
+`Config.ShutdownTimeout` (10s by default). `ReadHeaderTimeout` defaults to 5s; other
+timeouts are off unless set. `Addr()` returns the bound address, handy with `":0"` in tests.
+
 ### Error-wrapping decorators
 
 `executor` and `tx` ship `*WithErrWrap` decorators generated from `gowrap/errwrap.tmpl`.
@@ -163,6 +187,27 @@ To use the template in your own module:
 ```sh
 GOWRAP_TPL=$(go list -m -f '{{.Dir}}' github.com/D1sordxr/packages)/gowrap/errwrap.tmpl go generate ./...
 ```
+
+## Upgrading from v0.2
+
+v0.3.0 rewrites the PostgreSQL part and raises the Go version; the rest is new.
+
+- **Go 1.27** is required (v0.2 declared Go 1.23).
+- **`postgres/uow` is removed.** Instead of `BeginWithTx` / `Commit` / `Rollback`, wrap the
+  work in `tx.Manager.WithTransaction(ctx, fn)`: it commits when `fn` returns nil and rolls back
+  on an error or a panic. Nested calls join the outer transaction.
+- **`postgres/executor` is rewritten.** `executor.NewManager(pool)` becomes
+  `executor.NewExecutor(pool)`; repositories call `GetExecutor(ctx)` as before and should depend
+  on the narrow `executor.Querier`. `InjectTx` / `ExtractTx` became
+  `InjectTxExecutor` / `GetTxExecutor`; batch executors are replaced by `ExecBatch(ctx, *pgx.Batch)`.
+- **`postgres.NewPool(ctx, cfg)`** returns a plain `*pgxpool.Pool` and an error, checking the
+  connection with a ping; `postgres.Pool` and `postgres.Connection` are removed. Register
+  `postgres.NewPoolComponent` with `app` to close the pool on shutdown.
+- **`postgres.Config`** gains `DSN`, `SSLMode` and pool settings; `Migration` is removed, since
+  the library does not run migrations. `ConnectionString()` now returns an escaped
+  `postgres://` URL instead of a key/value string.
+- New packages: `app`, `cron`, `ctxutil`, `httpserver`, `postgres/tx`, `rabbitmq`, `redis`,
+  `gowrap`. `kafka` and `log` are unchanged.
 
 ## Development
 
