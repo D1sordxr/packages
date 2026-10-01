@@ -4,10 +4,11 @@ Reusable infrastructure for Go services: application lifecycle, PostgreSQL pool 
 context-bound transactions, RabbitMQ, Redis, HTTP server, cron workers, Kafka and logging helpers.
 
 ```sh
-go get github.com/D1sordxr/packages@v0.3.0
+go get github.com/D1sordxr/packages@v0.4.0
 ```
 
-Requires Go 1.27. Upgrading from v0.2? See [Upgrading from v0.2](#upgrading-from-v02).
+Requires Go 1.27. Upgrading? See [Upgrading from v0.3](#upgrading-from-v03) and
+[Upgrading from v0.2](#upgrading-from-v02).
 
 ## Packages
 
@@ -23,7 +24,7 @@ Requires Go 1.27. Upgrading from v0.2? See [Upgrading from v0.2](#upgrading-from
 | `cron` | `Worker` that runs a group of background handlers as one `Component` |
 | `ctxutil` | Type-safe context values keyed by type |
 | `kafka/consumer`, `kafka/producer` | Thin wrappers over `segmentio/kafka-go` |
-| `log` | zap-based logger |
+| `log` | `*slog.Logger` from `Config`, request-scoped fields carried in the context, errors with log fields |
 | `gowrap` | `gowrap` template that wraps returned errors with the operation name |
 
 ## Usage
@@ -168,6 +169,24 @@ for active requests: `Shutdown` within its ctx deadline, a cancelled `Start` wit
 `Config.ShutdownTimeout` (10s by default). `ReadHeaderTimeout` defaults to 5s; other
 timeouts are off unless set. `Addr()` returns the bound address, handy with `":0"` in tests.
 
+### Logging
+
+`log.New` builds a `*slog.Logger` (JSON or text) whose handler appends the fields stored in
+the context to every record logged with a `*Context` method. `Inject` starts a mutable set of
+fields; `Add` extends it further down the call chain, and the caller of `Inject` sees the
+additions, so a request logger can report a user id that authentication found later:
+
+```go
+logger, err := log.New(log.Config{Level: "debug", Format: log.FormatText}, os.Stdout)
+
+ctx = log.Inject(ctx, "request_id", requestID)
+log.Add(ctx, "user_id", userID)
+logger.InfoContext(ctx, "request handled")
+```
+
+`log.Wrap` attaches fields to an error, and `log.Err(err)` renders the full message together
+with those fields as one `error` group. `log.Discard()` returns a logger for tests.
+
 ### Error-wrapping decorators
 
 `executor` and `tx` ship `*WithErrWrap` decorators generated from `gowrap/errwrap.tmpl`.
@@ -187,6 +206,24 @@ To use the template in your own module:
 ```sh
 GOWRAP_TPL=$(go list -m -f '{{.Dir}}' github.com/D1sordxr/packages)/gowrap/errwrap.tmpl go generate ./...
 ```
+
+## Upgrading from v0.3
+
+v0.4.0 replaces the zap-based `log` package with one built on `log/slog`; the rest is unchanged.
+
+- `log.Default`, `log.Log`, `log.Logger`, `AsyncLogger`, `LogPanic` and the `LogGRPC` adapter are
+  removed together with the zap and go-grpc-middleware dependencies. Build a `*slog.Logger` with
+  `log.New(cfg, w)` and pass it explicitly; it satisfies `app.Logger`.
+- `log.Config` keeps only `Level`, `Format` and `AddSource`. An invalid level or format is an
+  error from `New` instead of a nil logger.
+- Context fields are no longer read from string keys such as `_request_id`: store them with
+  `log.Inject` and `log.Add`. The `_debug` context switch is gone; the level is the only filter.
+- Importing the package no longer subscribes to `SIGHUP`.
+- `FieldsError` gains `Unwrap`, so `errors.As` and `errors.Is` see through it; `Origin` is
+  removed. `Wrap` no longer modifies the fields of the error it wraps.
+- `ctxutil.Lookup` returns a context value without allocating when it is missing.
+- Minimum dependency versions are raised to fix known vulnerabilities: `pgx` v5.11.0,
+  `amqp091-go` v1.15.0, `golang.org/x/text` v0.42.0.
 
 ## Upgrading from v0.2
 

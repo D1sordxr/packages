@@ -4,8 +4,8 @@ import (
 	"context"
 )
 
-func (r *ManagerImpl) IsTx(ctx context.Context) error {
-	if _, err := r.GetTxExecutor(ctx); err != nil {
+func (m *ManagerImpl) IsTx(ctx context.Context) error {
+	if _, err := m.GetTxExecutor(ctx); err != nil {
 		return err
 	}
 	return nil

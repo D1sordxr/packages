@@ -61,3 +61,28 @@ func TestValue(t *testing.T) {
 		})
 	}
 }
+
+func TestLookup(t *testing.T) {
+	t.Parallel()
+
+	if got, ok := Lookup[string](WithValue(context.Background(), "hello")); !ok || got != "hello" {
+		t.Fatalf("Lookup() = %q, %v, want %q, true", got, ok, "hello")
+	}
+
+	if got, ok := Lookup[string](context.Background()); ok || got != "" {
+		t.Fatalf("Lookup() on empty ctx = %q, %v, want \"\", false", got, ok)
+	}
+
+	wrong := context.WithValue(context.Background(), key[string]{}, 42)
+	if _, ok := Lookup[string](wrong); ok {
+		t.Fatal("Lookup() of a wrong type = true, want false")
+	}
+}
+
+func TestLookupMissDoesNotAllocate(t *testing.T) {
+	ctx := WithValue(context.Background(), 1)
+
+	if allocs := testing.AllocsPerRun(100, func() { _, _ = Lookup[string](ctx) }); allocs != 0 {
+		t.Fatalf("Lookup() miss allocates %v times, want 0", allocs)
+	}
+}

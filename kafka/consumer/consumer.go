@@ -3,9 +3,10 @@ package consumer
 import (
 	"context"
 	"fmt"
-	"github.com/segmentio/kafka-go"
 	"sync"
 	"time"
+
+	"github.com/segmentio/kafka-go"
 )
 
 type Config struct {

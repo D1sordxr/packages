@@ -2,8 +2,9 @@ package producer
 
 import (
 	"context"
-	"github.com/segmentio/kafka-go"
 	"time"
+
+	"github.com/segmentio/kafka-go"
 )
 
 type Config struct {
