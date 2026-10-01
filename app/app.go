@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -92,8 +93,7 @@ func (a *App) shutdown(stopped <-chan error, drained bool) error {
 	defer cancel()
 
 	errs := make([]error, 0, len(a.components)+1)
-	for i := len(a.components) - 1; i >= 0; i-- {
-		c := a.components[i]
+	for _, c := range slices.Backward(a.components) {
 		if err := c.Shutdown(shutdownCtx); err != nil {
 			errs = append(errs, fmt.Errorf("shutdown %T: %w", c, err))
 		}
