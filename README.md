@@ -1,7 +1,7 @@
 # packages
 
 Reusable infrastructure for Go services: application lifecycle, PostgreSQL pool with
-context-bound transactions, cron workers, Kafka and logging helpers.
+context-bound transactions, RabbitMQ, Redis, HTTP server, cron workers, Kafka and logging helpers.
 
 ```sh
 go get github.com/D1sordxr/packages@latest
@@ -17,6 +17,9 @@ Requires Go 1.27.
 | `postgres` | `pgxpool` construction from `Config`, `PoolComponent` for health checks and graceful close |
 | `postgres/executor` | Resolves the query executor from context: the active transaction or the pool |
 | `postgres/tx` | Transaction manager: `WithTransaction(ctx, fn)` |
+| `rabbitmq` | Connection with retries, topology declaration, confirming `Publisher`, `Consumer` and `ConnectionComponent` |
+| `redis` | `go-redis` client construction from `Config`, `ClientComponent` for health checks and graceful close |
+| `httpserver` | `net/http` server as a `Component` with graceful shutdown |
 | `cron` | `Worker` that runs a group of background handlers as one `Component` |
 | `ctxutil` | Type-safe context values keyed by type |
 | `kafka/consumer`, `kafka/producer` | Thin wrappers over `segmentio/kafka-go` |
@@ -103,6 +106,41 @@ err := txManager.WithTransaction(ctx, func(ctx context.Context) error {
 - An error or panic in `fn` rolls the transaction back.
 - A nested `WithTransaction` joins the outer transaction; only the outermost call commits.
 
+### RabbitMQ
+
+```go
+conn, err := rabbitmq.Dial(ctx, &rabbitmq.Config{Host: "localhost", Port: 5672, Username: "guest", Password: "guest"})
+
+// Delayed delivery: messages wait in "delay" and are dead-lettered into "main".
+err = rabbitmq.Topology{
+	Exchanges: []rabbitmq.Exchange{
+		{Name: "main", Kind: amqp.ExchangeDirect, Durable: true},
+		{Name: "delay", Kind: amqp.ExchangeDirect, Durable: true},
+	},
+	Queues: []rabbitmq.Queue{
+		{Name: "main", Durable: true},
+		{Name: "delay", Durable: true, Args: rabbitmq.DelayQueueArgs("main", "", 0)},
+	},
+	Bindings: []rabbitmq.Binding{
+		{Queue: "main", Exchange: "main"},
+		{Queue: "delay", Exchange: "delay"},
+	},
+}.Declare(conn)
+
+publisher, err := rabbitmq.NewPublisher(conn) // confirm mode: Publish returns once the broker has the message
+err = publisher.Publish(ctx, "delay", "", amqp.Publishing{Body: body, Expiration: rabbitmq.Expiration(time.Minute)})
+
+consumer := rabbitmq.NewConsumer(conn, rabbitmq.ConsumerConfig{Queue: "main", Prefetch: 10},
+	func(ctx context.Context, d amqp.Delivery) error {
+		return handle(ctx, d.Body) // nil acks; an error or a panic rejects without requeue
+	}, log)
+
+a := app.New(log,
+	rabbitmq.NewConnectionComponent(conn), // fails the app if the broker drops the connection
+	consumer,                              // finishes in-flight deliveries on shutdown
+)
+```
+
 ### Error-wrapping decorators
 
 `executor` and `tx` ship `*WithErrWrap` decorators generated from `gowrap/errwrap.tmpl`.
@@ -129,12 +167,17 @@ GOWRAP_TPL=$(go list -m -f '{{.Dir}}' github.com/D1sordxr/packages)/gowrap/errwr
 go test -race ./...
 ```
 
-`postgres/tx` integration tests run only when a database is available:
+Integration tests of `postgres/tx`, `rabbitmq` and `redis` run only when the services are available:
 
 ```sh
 docker run -d --rm --name pg -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:16-alpine
+docker run -d --rm --name rabbit -p 55672:5672 rabbitmq:3-alpine
+docker run -d --rm --name redis -p 56379:6379 redis:7-alpine
+
 PACKAGES_TEST_POSTGRES_DSN='postgres://postgres:test@localhost:55432/postgres?sslmode=disable' \
-	go test -race ./postgres/...
+PACKAGES_TEST_RABBITMQ_URL='amqp://guest:guest@localhost:55672/' \
+PACKAGES_TEST_REDIS_ADDR='localhost:56379' \
+	go test -race ./...
 ```
 
 Code generation requires [`ifacemaker`](https://github.com/vburenin/ifacemaker) and

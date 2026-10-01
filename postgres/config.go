@@ -9,7 +9,8 @@ import (
 const defaultConnectTimeout = 5 * time.Second
 
 // Config holds connection and pool settings. DSN is used as is when set;
-// otherwise the connection string is built from Host/Port/Database/User/Password.
+// otherwise the connection string is built from Host/Port/Database/User/Password
+// and SSLMode (when empty, the libpq default "prefer" applies).
 // Zero pool settings keep the pgx defaults.
 type Config struct {
 	DSN      string `yaml:"dsn"`
@@ -18,6 +19,7 @@ type Config struct {
 	Database string `yaml:"database"`
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
+	SSLMode  string `yaml:"ssl_mode"`
 
 	MaxConns        int32         `yaml:"max_conns"`
 	MinConns        int32         `yaml:"min_conns"`
@@ -31,8 +33,13 @@ func (c *Config) ConnectionString() string {
 		return c.DSN
 	}
 
-	return fmt.Sprintf(
+	dsn := fmt.Sprintf(
 		"host=%s user=%s password=%s dbname=%s port=%d",
 		c.Host, c.User, c.Password, c.Database, c.Port,
 	)
+	if c.SSLMode != "" {
+		dsn += " sslmode=" + c.SSLMode
+	}
+
+	return dsn
 }
